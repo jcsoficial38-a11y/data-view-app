@@ -298,6 +298,25 @@
                             <span>Salvar e Publicar Planilha</span>
                         </button>
                     </form>
+
+                    <!-- PERSISTENT STORAGE & BACKUP MANAGEMENT BLOCK -->
+                    <div class="pt-4 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+                        <div class="flex items-center gap-2">
+                            <button type="button" onclick="exportDatabaseBackup()" class="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold flex items-center gap-1.5 transition-colors" title="Exportar backup JSON">
+                                <i class="fas fa-file-export text-sky-500"></i>
+                                <span>Exportar Backup (JSON)</span>
+                            </button>
+                            <label class="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer" title="Restaurar backup JSON">
+                                <i class="fas fa-file-import text-emerald-500"></i>
+                                <span>Restaurar Backup</span>
+                                <input type="file" accept=".json" onchange="importDatabaseBackup(event)" class="hidden">
+                            </label>
+                        </div>
+                        <button type="button" onclick="checkStoragePersistenceStatus()" class="text-xs font-medium text-slate-500 dark:text-slate-400 hover:underline flex items-center gap-1">
+                            <i class="fas fa-shield-check text-emerald-500"></i>
+                            <span>Status da Persistência</span>
+                        </button>
+                    </div>
                 </section>
 
                 <!-- SEARCH BAR & SPREADSHEETS LIST -->
@@ -671,6 +690,7 @@
         const STORAGE_KEY_REGISTERED_USERS = "dataview_registered_users_v2";
         const STORAGE_KEY_DELETED_USERS = "dataview_deleted_users_v2";
         const STORAGE_KEY_ADMIN_PASS = "dataview_admin_password_v2";
+        const STORAGE_KEY_DELETED_SHEET_IDS = "dataview_deleted_sheet_ids_v2";
 
         const DEFAULT_SHEETS = [
             {
@@ -738,6 +758,7 @@
         let trashData = [];
         let registeredUsersData = [];
         let deletedEmailsData = [];
+        let deletedSheetIdsData = [];
         let activeModalSheet = null;
 
         // --- PWA INSTALLATION PROMPT HANDLING ---
@@ -848,6 +869,21 @@
         }
 
         function initDatabase() {
+            if (navigator.storage && navigator.storage.persist) {
+                navigator.storage.persist().then(persistent => {
+                    if (persistent) {
+                        console.log("[Storage] Armazenamento persistente concedido pelo navegador.");
+                    }
+                });
+            }
+
+            // Deleted Sheet IDs (Definitive Deletion blacklist)
+            try {
+                deletedSheetIdsData = JSON.parse(localStorage.getItem(STORAGE_KEY_DELETED_SHEET_IDS)) || [];
+            } catch(e) {
+                deletedSheetIdsData = [];
+            }
+
             // Deleted Users
             try {
                 deletedEmailsData = JSON.parse(localStorage.getItem(STORAGE_KEY_DELETED_USERS)) || [];
@@ -863,19 +899,21 @@
                 registeredUsersData = [...INITIAL_REGISTERED_USERS];
             }
 
-            // Sheets
-            try {
-                const savedSheets = localStorage.getItem(STORAGE_KEY_SHEETS);
-                sheetsData = savedSheets ? JSON.parse(savedSheets) : [...DEFAULT_SHEETS];
-            } catch(e) {
-                sheetsData = [...DEFAULT_SHEETS];
-            }
-
             // Trash
             try {
                 trashData = JSON.parse(localStorage.getItem(STORAGE_KEY_TRASH)) || [];
             } catch(e) {
                 trashData = [];
+            }
+
+            // Sheets (filtered against deletedSheetIdsData so deleted items never reappear)
+            try {
+                const savedSheets = localStorage.getItem(STORAGE_KEY_SHEETS);
+                let rawSheets = savedSheets ? JSON.parse(savedSheets) : [...DEFAULT_SHEETS];
+                const trashIds = trashData.map(t => t.id);
+                sheetsData = rawSheets.filter(s => !deletedSheetIdsData.includes(s.id) && !trashIds.includes(s.id));
+            } catch(e) {
+                sheetsData = DEFAULT_SHEETS.filter(s => !deletedSheetIdsData.includes(s.id));
             }
         }
 
@@ -1370,7 +1408,7 @@
             renderSheetsList();
         }
 
-        // --- TRASH SYSTEM ---
+        // --- TRASH & DEFINITIVE DELETION SYSTEM ---
         function moveSheetToTrash(event, sheetId) {
             if (event) event.stopPropagation();
             if (!currentUser || currentUser.role !== 'admin') return;
@@ -1382,8 +1420,13 @@
             deletedItem.deletedAt = new Date().toISOString();
             trashData.unshift(deletedItem);
 
+            if (!deletedSheetIdsData.includes(sheetId)) {
+                deletedSheetIdsData.push(sheetId);
+            }
+
             localStorage.setItem(STORAGE_KEY_SHEETS, JSON.stringify(sheetsData));
             localStorage.setItem(STORAGE_KEY_TRASH, JSON.stringify(trashData));
+            localStorage.setItem(STORAGE_KEY_DELETED_SHEET_IDS, JSON.stringify(deletedSheetIdsData));
 
             showToast("Planilha movida para a Lixeira!", "warning");
             renderSheetsList();
@@ -1401,8 +1444,11 @@
             delete item.deletedAt;
             sheetsData.unshift(item);
 
+            deletedSheetIdsData = deletedSheetIdsData.filter(id => id !== item.id);
+
             localStorage.setItem(STORAGE_KEY_SHEETS, JSON.stringify(sheetsData));
             localStorage.setItem(STORAGE_KEY_TRASH, JSON.stringify(trashData));
+            localStorage.setItem(STORAGE_KEY_DELETED_SHEET_IDS, JSON.stringify(deletedSheetIdsData));
 
             showToast("Planilha restaurada com sucesso!");
             renderSheetsList();
@@ -1414,22 +1460,115 @@
             const idx = trashData.findIndex(t => t.id === trashId);
             if (idx === -1) return;
 
-            trashData.splice(idx, 1);
-            localStorage.setItem(STORAGE_KEY_TRASH, JSON.stringify(trashData));
+            const item = trashData.splice(idx, 1)[0];
+            if (!deletedSheetIdsData.includes(item.id)) {
+                deletedSheetIdsData.push(item.id);
+            }
 
-            showToast("Item excluído definitivamente!", "info");
+            localStorage.setItem(STORAGE_KEY_TRASH, JSON.stringify(trashData));
+            localStorage.setItem(STORAGE_KEY_DELETED_SHEET_IDS, JSON.stringify(deletedSheetIdsData));
+
+            showToast("Item excluído definitivamente da base e lixeira!", "info");
             updateTrashBadges();
             renderTrashList();
         }
 
         function emptyTrashPermanently() {
             if (trashData.length === 0) return;
+
+            trashData.forEach(item => {
+                if (!deletedSheetIdsData.includes(item.id)) {
+                    deletedSheetIdsData.push(item.id);
+                }
+            });
+
             trashData = [];
             localStorage.setItem(STORAGE_KEY_TRASH, JSON.stringify(trashData));
+            localStorage.setItem(STORAGE_KEY_DELETED_SHEET_IDS, JSON.stringify(deletedSheetIdsData));
 
-            showToast("Lixeira esvaziada com sucesso!", "info");
+            showToast("Lixeira esvaziada e itens removidos definitivamente!", "info");
             updateTrashBadges();
             renderTrashList();
+        }
+
+        // --- BACKUP & PERSISTENT STORAGE UTILS ---
+        function exportDatabaseBackup() {
+            if (!currentUser || currentUser.role !== 'admin') return;
+            const backupData = {
+                version: "2.0",
+                exportedAt: new Date().toISOString(),
+                sheets: sheetsData,
+                trash: trashData,
+                deletedSheetIds: deletedSheetIdsData,
+                registeredUsers: registeredUsersData,
+                deletedUsers: deletedEmailsData,
+                adminPass: localStorage.getItem(STORAGE_KEY_ADMIN_PASS)
+            };
+
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(backupData, null, 2));
+            const downloadAnchor = document.createElement('a');
+            downloadAnchor.setAttribute("href", dataStr);
+            downloadAnchor.setAttribute("download", `dataview_backup_${new Date().toISOString().slice(0,10)}.json`);
+            document.body.appendChild(downloadAnchor);
+            downloadAnchor.click();
+            downloadAnchor.remove();
+            showToast("Backup do banco de dados exportado com sucesso!", "success");
+        }
+
+        function importDatabaseBackup(event) {
+            if (!currentUser || currentUser.role !== 'admin') return;
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const parsed = JSON.parse(e.target.result);
+                    if (parsed.sheets && Array.isArray(parsed.sheets)) {
+                        sheetsData = parsed.sheets;
+                        localStorage.setItem(STORAGE_KEY_SHEETS, JSON.stringify(sheetsData));
+                    }
+                    if (parsed.trash && Array.isArray(parsed.trash)) {
+                        trashData = parsed.trash;
+                        localStorage.setItem(STORAGE_KEY_TRASH, JSON.stringify(trashData));
+                    }
+                    if (parsed.deletedSheetIds && Array.isArray(parsed.deletedSheetIds)) {
+                        deletedSheetIdsData = parsed.deletedSheetIds;
+                        localStorage.setItem(STORAGE_KEY_DELETED_SHEET_IDS, JSON.stringify(deletedSheetIdsData));
+                    }
+                    if (parsed.registeredUsers && Array.isArray(parsed.registeredUsers)) {
+                        registeredUsersData = parsed.registeredUsers;
+                        localStorage.setItem(STORAGE_KEY_REGISTERED_USERS, JSON.stringify(registeredUsersData));
+                    }
+                    if (parsed.deletedUsers && Array.isArray(parsed.deletedUsers)) {
+                        deletedEmailsData = parsed.deletedUsers;
+                        localStorage.setItem(STORAGE_KEY_DELETED_USERS, JSON.stringify(deletedEmailsData));
+                    }
+                    if (parsed.adminPass) {
+                        localStorage.setItem(STORAGE_KEY_ADMIN_PASS, parsed.adminPass);
+                    }
+                    showToast("Banco de dados restaurado com sucesso!", "success");
+                    renderDashboardScreen();
+                } catch(err) {
+                    showToast("Erro ao importar arquivo de backup (JSON inválido).", "error");
+                }
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+        }
+
+        function checkStoragePersistenceStatus() {
+            if (navigator.storage && navigator.storage.persisted) {
+                navigator.storage.persisted().then(isPersisted => {
+                    if (isPersisted) {
+                        showToast("Armazenamento persistente ativo: dados protegidos contra limpeza do navegador.", "success");
+                    } else {
+                        showToast("Armazenamento local ativo. Exporte backup para segurança adicional.", "info");
+                    }
+                });
+            } else {
+                showToast("Armazenamento local ativo.", "info");
+            }
         }
 
         function updateTrashBadges() {
