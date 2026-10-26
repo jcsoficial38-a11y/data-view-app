@@ -1,7 +1,7 @@
 {
   "id": "/",
   "name": "Data View Mobile",
-  "short_name": "Data View",
+  "short_name": "Data View Mobile",
   "description": "Acesse suas planilhas protegidas em tempo real com controle de acesso e visualização segura.",
   "start_url": "/",
   "scope": "/",
